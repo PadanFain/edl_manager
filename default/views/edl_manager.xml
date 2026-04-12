@@ -1,0 +1,8 @@
+<!-- default/views/edl_manager.xml
+     Splunk SimpleXML view that loads the custom HTML template.
+     The template bootstraps the React application.
+-->
+<view template="edl_manager.html" type="html">
+  <label>EDL Manager</label>
+  <description>External Dynamic List IOC management, policy control, and firewall feed</description>
+</view>

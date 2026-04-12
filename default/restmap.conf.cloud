@@ -1,0 +1,12 @@
+# =============================================================================
+# restmap.conf.cloud
+#
+# For Splunk Cloud deployments: rename this file to restmap.conf and
+# delete (or rename) the existing restmap.conf.
+#
+# No custom REST handlers are registered. All app functionality runs through:
+#   • Native KV Store REST API (/storage/collections/data/*)
+#   • SPL macros using inputlookup / outputlookup
+#   • Scheduled saved searches
+#   • Client-side React logic in the browser
+# =============================================================================

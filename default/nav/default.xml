@@ -1,0 +1,5 @@
+<!-- default/nav/default.xml — App navigation bar -->
+<nav search_view="search" color="#1e1b4b">
+  <view name="edl_manager" default="true" />
+  <view name="search" />
+</nav>

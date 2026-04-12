@@ -1,0 +1,19 @@
+[]
+access = read : [ * ], write : [ admin ]
+export = system
+
+[views]
+access = read : [ * ], write : [ admin ]
+export = system
+
+[transforms]
+access = read : [ * ], write : [ admin ]
+export = system
+
+[collections]
+access = read : [ * ], write : [ admin ]
+export = system
+
+[savedsearches]
+access = read : [ * ], write : [ admin ]
+export = system
