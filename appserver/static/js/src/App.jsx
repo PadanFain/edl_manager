@@ -1,15 +1,19 @@
 /**
- * App.jsx — v1.1
+ * App.jsx — v1.2
  * Root application component. Manages tab routing and shared policy/conflict state.
- * Tabs: Dashboard, IOC Entries, Bulk Import, Feed Endpoints, TAXII Sources,
- *       Conflicts, Policies, Tokens, Audit Log, Attack Map, Campaigns
+ *
+ * FIX: Removed early-return gates for policiesLoading / policiesError.
+ * Previously, setting policiesLoading=true unmounted the entire TabLayout,
+ * resetting activeTab to 'dashboard' and blanking the content area on every
+ * tab click that triggered a reload. Now the TabLayout always stays mounted;
+ * loading/error state is shown inline inside the Policies panel only.
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
 import TabLayout   from '@splunk/react-ui/TabLayout';
 import Message     from '@splunk/react-ui/Message';
 import WaitSpinner from '@splunk/react-ui/WaitSpinner';
-import Badge       from '@splunk/react-ui/Badge';
+import Chip        from '@splunk/react-ui/Chip';
 
 import api             from './api/api';
 import IOCTable        from './components/IOCTable';
@@ -71,60 +75,54 @@ export default function App() {
     setActiveTab(selectedTabId);
   }, []);
 
-  if (policiesLoading) {
-    return (
-      <div style={{ padding: 40, textAlign: 'center' }}>
-        <WaitSpinner size="large" />
-        <p style={{ marginTop: 16, color: '#666' }}>Loading EDL Manager…</p>
-      </div>
-    );
-  }
+  const conflictBadge = openConflicts > 0
+    ? <Chip appearance="destructive" style={{ marginLeft: 6 }}>{openConflicts}</Chip>
+    : null;
 
-  if (policiesError && policies.length === 0) {
-    return (
-      <div style={{ padding: 24 }}>
-        <Message appearance="error">
-          Failed to load policies: {policiesError}.
-          Ensure the app is installed correctly and you have the
+  const policiesNode = policiesLoading
+    ? <div style={{ padding: 40, textAlign: 'center' }}><WaitSpinner size="large" /></div>
+    : policiesError && policies.length === 0
+      ? (
+        <Message appearance="error" style={{ margin: 16 }}>
+          Failed to load policies: {policiesError}.{' '}
+          Ensure the app is installed correctly and you have the{' '}
           <code>edl_read</code> capability.
         </Message>
-      </div>
-    );
-  }
-
-  const conflictBadge = openConflicts > 0
-    ? <Badge appearance="destructive" style={{ marginLeft: 6 }}>{openConflicts}</Badge>
-    : null;
+      )
+      : null;
 
   return (
     <div style={{ padding: '0 8px' }}>
-      {policiesError && (
+      {policiesError && policies.length > 0 && (
         <Message appearance="warning" style={{ marginBottom: 8 }}>
-          Warning: {policiesError}
+          Warning: could not refresh policies — {policiesError}
         </Message>
       )}
+
       <div className="edl-app">
         <TabLayout
           activePanelId={activeTab}
           onChange={handleTabChange}
           style={{ minHeight: 600 }}
         >
-          <TabLayout.Panel label="Dashboard"  panelId="dashboard">
+          <TabLayout.Panel label="Dashboard" panelId="dashboard">
             <ErrorBoundary><Dashboard onTabChange={setActiveTab} /></ErrorBoundary>
           </TabLayout.Panel>
 
           <TabLayout.Panel label="IOC Entries" panelId="iocs">
             <ErrorBoundary>
-              <IOCTable
-                policies={policies}
-                onConflictsChanged={loadConflicts}
-              />
+              {policiesNode || (
+                <IOCTable
+                  policies={policies}
+                  onConflictsChanged={loadConflicts}
+                />
+              )}
             </ErrorBoundary>
           </TabLayout.Panel>
 
           <TabLayout.Panel label="Bulk Import" panelId="import">
             <ErrorBoundary>
-              <BulkImport policies={policies} />
+              {policiesNode || <BulkImport policies={policies} />}
             </ErrorBoundary>
           </TabLayout.Panel>
 
@@ -133,7 +131,9 @@ export default function App() {
           </TabLayout.Panel>
 
           <TabLayout.Panel label="TAXII Sources" panelId="taxii">
-            <ErrorBoundary><TAXIIManager policies={policies} /></ErrorBoundary>
+            <ErrorBoundary>
+              {policiesNode || <TAXIIManager policies={policies} />}
+            </ErrorBoundary>
           </TabLayout.Panel>
 
           <TabLayout.Panel
@@ -147,10 +147,12 @@ export default function App() {
 
           <TabLayout.Panel label="Policies" panelId="policies">
             <ErrorBoundary>
-              <PolicyManager
-                policies={policies}
-                onChanged={loadPolicies}
-              />
+              {policiesNode || (
+                <PolicyManager
+                  policies={policies}
+                  onChanged={loadPolicies}
+                />
+              )}
             </ErrorBoundary>
           </TabLayout.Panel>
 
