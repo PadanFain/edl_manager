@@ -1,17 +1,8 @@
-<!--
-  appserver/templates/edl_manager.html
-  Splunk HTML template that bootstraps the React application.
-  Loaded by default/views/edl_manager.xml.
--->
-{% extends "splunkdj:base_with_app_bar.html" %}
-{% load splunktags %}
-
-{% block title %}EDL Manager{% endblock %}
-
-{% block pageContent %}
-<div id="edl-manager-root">
-  <p style="padding:20px;color:#666">Loading EDL Manager...</p>
-</div>
-
-{% javascript 'edl_manager:js/build/edl_manager.bundle.js' %}
-{% endblock %}
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><title>EDL Manager</title></head>
+<body>
+<div id="edl-manager-root">Loading EDL Manager...</div>
+<script src="${make_url('/static/app/edl_manager/js/build/edl_manager.bundle.js')}"></script>
+</body>
+</html>

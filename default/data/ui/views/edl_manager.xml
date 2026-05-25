@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<dashboard script="js/build/edl_manager.bundle.js" hideEdit="true">
+  <label>EDL Manager</label>
+  <row>
+    <panel>
+      <html>
+        <div id="edl-manager-root">Loading EDL Manager...</div>
+      </html>
+    </panel>
+  </row>
+</dashboard>
