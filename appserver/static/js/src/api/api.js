@@ -2,10 +2,17 @@
  * api/api.js — EDL Manager v1.5.0
  *
  * Unified API client. Uses @splunk/splunk-utils/fetch defaultFetchInit for
- * auth (official SUIT pattern — design decision #12). Falls back to manual
- * X-Splunk-Form-Key construction if splunk-utils is unavailable.
+ * auth (official SUIT pattern). Falls back to manual X-Splunk-Form-Key
+ * construction if splunk-utils is unavailable.
  *
  * All calls return { data, error } — never throw.
+ *
+ * KEY FINDING: PSCA (PersistentServerConnectionApplication) in Splunk 10.x
+ * silently drops application/json POST bodies. It only populates request['form']
+ * for application/x-www-form-urlencoded. All POST bodies are sent as:
+ *   Content-Type: application/x-www-form-urlencoded
+ *   body: payload=<url-encoded JSON string>
+ * The Python handler reads this via _parse_body() → request['form'].
  */
 
 let _fetchInit = null;
@@ -14,21 +21,20 @@ function getFetchInit() {
   if (_fetchInit !== null) return _fetchInit;
   try {
     const { defaultFetchInit } = require('@splunk/splunk-utils/fetch');
-    _fetchInit = defaultFetchInit;
+    _fetchInit = typeof defaultFetchInit === 'function'
+      ? defaultFetchInit()
+      : defaultFetchInit;
   } catch (_) {
-    _fetchInit = () => {
-      const token = document.cookie
-        .split('; ')
-        .find(c => c.startsWith('splunkweb_csrf_token_'))
-        ?.split('=')[1] || '';
-      return {
-        credentials: 'include',
-        headers: {
-          'Content-Type':      'application/json',
-          'X-Splunk-Form-Key': token,
-          'X-Requested-With':  'XMLHttpRequest',
-        },
-      };
+    const token = document.cookie
+      .split('; ')
+      .find(c => c.startsWith('splunkweb_csrf_token_'))
+      ?.split('=')[1] || '';
+    _fetchInit = {
+      credentials: 'include',
+      headers: {
+        'X-Splunk-Form-Key': token,
+        'X-Requested-With':  'XMLHttpRequest',
+      },
     };
   }
   return _fetchInit;
@@ -38,23 +44,32 @@ function getBase() {
   const loc   = window.location;
   const match = loc.pathname.match(/^(\/[a-z]{2}-[A-Z]{2}\/)/);
   const pfx   = match ? match[1] : '/en-US/';
-  return `${loc.protocol}//${loc.host}${pfx}splunkd/servicesNS/nobody/edl_manager/edl_manager`;
+  return `${loc.protocol}//${loc.host}${pfx}splunkd/__raw/servicesNS/nobody/edl_manager/edl_manager`;
 }
 
 async function request(method, path, params, body) {
   try {
     let url = `${getBase()}${path}`;
-    if (params && Object.keys(params).length) {
-      const qs = new URLSearchParams(
-        Object.fromEntries(
-          Object.entries(params).filter(([, v]) => v !== '' && v != null)
-        )
-      ).toString();
-      if (qs) url += `?${qs}`;
+    // output_mode=json required for Splunk's web proxy to return JSON not XML
+    const allParams = { output_mode: 'json', ...(params || {}) };
+    const qs = new URLSearchParams(
+      Object.fromEntries(
+        Object.entries(allParams).filter(([, v]) => v !== '' && v != null)
+      )
+    ).toString();
+    if (qs) url += `?${qs}`;
+
+    const init = getFetchInit();
+    const opts = { ...init, method };
+
+    if (body !== undefined) {
+      // PSCA drops application/json bodies entirely — it only populates
+      // request['form'] for application/x-www-form-urlencoded. Send the
+      // JSON as the value of a 'payload' form field so _parse_body can read it.
+      opts.headers = { ...(init.headers || {}), 'Content-Type': 'application/x-www-form-urlencoded' };
+      opts.body = `payload=${encodeURIComponent(JSON.stringify(body))}`;
     }
-    const init = getFetchInit()();
-    const opts = { ...init, method, headers: { ...init.headers, 'Content-Type': 'application/json' } };
-    if (body !== undefined) opts.body = JSON.stringify(body);
+
     const res  = await fetch(url, opts);
     const ct   = res.headers.get('content-type') || '';
     const data = ct.includes('application/json') ? await res.json() : await res.text();
@@ -65,9 +80,9 @@ async function request(method, path, params, body) {
   }
 }
 
-const g  = (path, p)    => request('GET',    path, p,         undefined);
-const po = (path, b, p) => request('POST',   path, p,         b);
-const de = (path, p)    => request('DELETE', path, p,         undefined);
+const g  = (path, p)    => request('GET',    path, p,    undefined);
+const po = (path, b, p) => request('POST',   path, p,    b);
+const de = (path, p)    => request('DELETE', path, p,    undefined);
 
 const api = {
   iocs: {
