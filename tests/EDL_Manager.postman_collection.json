@@ -46,7 +46,6 @@
           "name": "Cleanup — delete postman-sourced IOCs first",
           "event": [
             { "listen": "prerequest", "script": { "exec": [
-              "// Must delete IOCs BEFORE policy (policy delete blocked if IOCs reference it)",
               "const base = pm.collectionVariables.get('base_url');",
               "const token = pm.collectionVariables.get('splunk_token');",
               "pm.sendRequest({",
@@ -59,7 +58,6 @@
               "});"
             ], "type": "text/javascript" } },
             { "listen": "test", "script": { "exec": [
-              "// 200=deleted, 400=no keys (nothing to delete) — both are fine",
               "pm.test('Cleanup IOCs done', () => pm.expect([200,400]).to.include(pm.response.code));"
             ], "type": "text/javascript" } }
           ],
@@ -86,7 +84,6 @@
               "});"
             ], "type": "text/javascript" } },
             { "listen": "test", "script": { "exec": [
-              "// 200=deleted, 404=did not exist — both fine",
               "pm.test('Cleanup policy done', () => pm.expect([200,404]).to.include(pm.response.code));"
             ], "type": "text/javascript" } }
           ],
@@ -341,6 +338,31 @@
     {
       "name": "8. Final Cleanup",
       "item": [
+        {
+          "name": "Delete remaining postman IOCs",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": [
+              "const base = pm.collectionVariables.get('base_url');",
+              "const token = pm.collectionVariables.get('splunk_token');",
+              "pm.sendRequest({",
+              "  url: `${base}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&count=0`,",
+              "  method: 'GET',",
+              "  header: { Authorization: `Bearer ${token}` }",
+              "}, (err, res) => {",
+              "  const items = (res.json().items || []).filter(i => i.source === 'postman');",
+              "  pm.collectionVariables.set('final_ioc_keys', JSON.stringify(items.map(i => i._key)));",
+              "});"
+            ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "pm.test('Final IOC cleanup done', () => pm.expect([200,400]).to.include(pm.response.code));"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "method": "POST", "header": [],
+            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_delete\",\"keys\":{{final_ioc_keys}}}" }] },
+            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
+          }
+        },
         {
           "name": "Delete TestPolicy",
           "event": [{ "listen": "test", "script": { "exec": ["pm.test('Policy cleaned up', () => pm.expect([200,404]).to.include(pm.response.code));"], "type": "text/javascript" } }],
