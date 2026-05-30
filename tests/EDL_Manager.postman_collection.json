@@ -2,7 +2,7 @@
   "info": {
     "name": "EDL Manager v1.5.0",
     "_postman_id": "edl-manager-v1-5-0",
-    "description": "Complete test suite for all EDL Manager REST endpoints.\n\nSetup:\n1. Set collection variables: base_url, username, password\n2. Run the full collection top to bottom — section 0 handles auth AND cleanup\n3. Safe to re-run against a dirty KV Store (cleanup runs first)\n\nAll POST requests use x-www-form-urlencoded with key=payload, value=<JSON>.\nPSCA (Splunk 10.x) drops application/json bodies silently.",
+    "description": "Complete test suite for all EDL Manager REST endpoints.\n\nSetup:\n1. Set collection variables: base_url, username, password\n2. Run the full collection top to bottom — section 0 handles auth AND cleanup\n3. Safe to re-run against a dirty KV Store (cleanup runs first)\n\nCleanup order: IOCs first (removes policy references), then policy, then tokens.\n\nAll POST requests use x-www-form-urlencoded with key=payload, value=<JSON>.\nPSCA (Splunk 10.x) drops application/json bodies silently.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -43,10 +43,36 @@
           }
         },
         {
+          "name": "Cleanup — delete postman-sourced IOCs first",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": [
+              "// Must delete IOCs BEFORE policy (policy delete blocked if IOCs reference it)",
+              "const base = pm.collectionVariables.get('base_url');",
+              "const token = pm.collectionVariables.get('splunk_token');",
+              "pm.sendRequest({",
+              "  url: `${base}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&count=0`,",
+              "  method: 'GET',",
+              "  header: { Authorization: `Bearer ${token}` }",
+              "}, (err, res) => {",
+              "  const items = (res.json().items || []).filter(i => i.source === 'postman');",
+              "  pm.collectionVariables.set('cleanup_ioc_keys', JSON.stringify(items.map(i => i._key)));",
+              "});"
+            ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "// 200=deleted, 400=no keys (nothing to delete) — both are fine",
+              "pm.test('Cleanup IOCs done', () => pm.expect([200,400]).to.include(pm.response.code));"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "method": "POST", "header": [],
+            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_delete\",\"keys\":{{cleanup_ioc_keys}}}" }] },
+            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
+          }
+        },
+        {
           "name": "Cleanup — delete TestPolicy if exists",
           "event": [
             { "listen": "prerequest", "script": { "exec": [
-              "// Find TestPolicy key and store it for deletion",
               "const base = pm.collectionVariables.get('base_url');",
               "const token = pm.collectionVariables.get('splunk_token');",
               "pm.sendRequest({",
@@ -60,7 +86,8 @@
               "});"
             ], "type": "text/javascript" } },
             { "listen": "test", "script": { "exec": [
-              "pm.test('Cleanup policy done (200 or 404)', () => pm.expect([200,404]).to.include(pm.response.code));"
+              "// 200=deleted, 404=did not exist — both fine",
+              "pm.test('Cleanup policy done', () => pm.expect([200,404]).to.include(pm.response.code));"
             ], "type": "text/javascript" } }
           ],
           "request": {
@@ -85,38 +112,12 @@
               "});"
             ], "type": "text/javascript" } },
             { "listen": "test", "script": { "exec": [
-              "pm.test('Cleanup token done (200 or 404)', () => pm.expect([200,404]).to.include(pm.response.code));"
+              "pm.test('Cleanup token done', () => pm.expect([200,404]).to.include(pm.response.code));"
             ], "type": "text/javascript" } }
           ],
           "request": {
             "method": "DELETE",
             "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens/{{cleanup_token_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens","{{cleanup_token_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
-        },
-        {
-          "name": "Cleanup — delete postman-sourced IOCs",
-          "event": [
-            { "listen": "prerequest", "script": { "exec": [
-              "// Delete all IOCs with source=postman",
-              "const base = pm.collectionVariables.get('base_url');",
-              "const token = pm.collectionVariables.get('splunk_token');",
-              "pm.sendRequest({",
-              "  url: `${base}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&count=0`,",
-              "  method: 'GET',",
-              "  header: { Authorization: `Bearer ${token}` }",
-              "}, (err, res) => {",
-              "  const items = (res.json().items || []).filter(i => i.source === 'postman');",
-              "  pm.collectionVariables.set('cleanup_ioc_keys', JSON.stringify(items.map(i => i._key)));",
-              "});"
-            ], "type": "text/javascript" } },
-            { "listen": "test", "script": { "exec": [
-              "pm.test('Cleanup IOCs done (200 or 400)', () => pm.expect([200,400]).to.include(pm.response.code));"
-            ], "type": "text/javascript" } }
-          ],
-          "request": {
-            "method": "POST", "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_delete\",\"keys\":{{cleanup_ioc_keys}}}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
           }
         }
       ]
