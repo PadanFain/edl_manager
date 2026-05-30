@@ -2,7 +2,7 @@
   "info": {
     "name": "EDL Manager v1.5.0",
     "_postman_id": "edl-manager-v1-5-0",
-    "description": "Complete test suite for all EDL Manager REST endpoints.\n\nSetup:\n1. Set collection variables: base_url, username, password\n2. Run '0. Auth — Get Session Token' first — sets {{splunk_token}} automatically\n3. All other requests use {{splunk_token}} via Bearer auth\n\nCRITICAL: All POST requests use Body > x-www-form-urlencoded with ONE key:\n  key: payload\n  value: <JSON string>\nThis is because PSCA (Splunk 10.x) silently drops application/json bodies.\nThe Python handler reads request['form'][0][1] and JSON-parses it.",
+    "description": "Complete test suite for all EDL Manager REST endpoints.\n\nSetup:\n1. Set collection variables: base_url, username, password\n2. Run the full collection top to bottom — section 0 handles auth AND cleanup\n3. Safe to re-run against a dirty KV Store (cleanup runs first)\n\nAll POST requests use x-www-form-urlencoded with key=payload, value=<JSON>.\nPSCA (Splunk 10.x) drops application/json bodies silently.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -10,12 +10,12 @@
     { "key": "username",      "value": "admin",                  "type": "string" },
     { "key": "password",      "value": "changeme",               "type": "string" },
     { "key": "splunk_token",  "value": "",                       "type": "string" },
-    { "key": "policy_key",   "value": "",                        "type": "string" },
-    { "key": "ioc_key",      "value": "",                        "type": "string" },
-    { "key": "token_key",    "value": "",                        "type": "string" },
-    { "key": "edl_token_raw","value": "",                        "type": "string" },
-    { "key": "taxii_key",    "value": "",                        "type": "string" },
-    { "key": "conflict_key", "value": "",                        "type": "string" }
+    { "key": "policy_key",    "value": "",                       "type": "string" },
+    { "key": "ioc_key",       "value": "",                       "type": "string" },
+    { "key": "token_key",     "value": "",                       "type": "string" },
+    { "key": "edl_token_raw", "value": "",                       "type": "string" },
+    { "key": "taxii_key",     "value": "",                       "type": "string" },
+    { "key": "conflict_key",  "value": "",                       "type": "string" }
   ],
   "auth": {
     "type": "bearer",
@@ -23,34 +23,100 @@
   },
   "item": [
     {
-      "name": "0. Auth",
+      "name": "0. Auth + Cleanup",
       "item": [
         {
           "name": "Get Session Token",
           "event": [{ "listen": "test", "script": { "exec": [
             "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "const json = pm.response.json();",
-            "const token = json.sessionKey;",
+            "const token = pm.response.json().sessionKey;",
             "if (token) {",
             "  pm.collectionVariables.set('splunk_token', token);",
-            "  pm.test('Session token extracted', () => pm.expect(token).to.not.be.empty);",
-            "} else {",
-            "  pm.test('Session token found', () => pm.expect.fail('No sessionKey in response'));",
-            "}"
+            "  pm.test('Token extracted', () => pm.expect(token).to.not.be.empty);",
+            "} else { pm.test('Token found', () => pm.expect.fail('No sessionKey')); }"
           ], "type": "text/javascript" } }],
           "request": {
             "auth": { "type": "noauth" },
-            "method": "POST",
-            "header": [],
-            "body": {
-              "mode": "urlencoded",
-              "urlencoded": [
-                { "key": "username", "value": "{{username}}" },
-                { "key": "password", "value": "{{password}}" }
-              ]
-            },
-            "url": { "raw": "{{base_url}}/services/auth/login?output_mode=json", "host": ["{{base_url}}"], "path": ["services","auth","login"], "query": [{ "key": "output_mode", "value": "json" }] },
-            "description": "Authenticates and stores the session token as {{splunk_token}}. Run this first."
+            "method": "POST", "header": [],
+            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "username", "value": "{{username}}" }, { "key": "password", "value": "{{password}}" }] },
+            "url": { "raw": "{{base_url}}/services/auth/login?output_mode=json", "host": ["{{base_url}}"], "path": ["services","auth","login"], "query": [{ "key": "output_mode", "value": "json" }] }
+          }
+        },
+        {
+          "name": "Cleanup — delete TestPolicy if exists",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": [
+              "// Find TestPolicy key and store it for deletion",
+              "const base = pm.collectionVariables.get('base_url');",
+              "const token = pm.collectionVariables.get('splunk_token');",
+              "pm.sendRequest({",
+              "  url: `${base}/servicesNS/nobody/edl_manager/edl_manager/policies?output_mode=json`,",
+              "  method: 'GET',",
+              "  header: { Authorization: `Bearer ${token}` }",
+              "}, (err, res) => {",
+              "  const items = res.json().items || [];",
+              "  const p = items.find(i => i.name === 'TestPolicy');",
+              "  pm.collectionVariables.set('cleanup_policy_key', p ? p._key : 'none');",
+              "});"
+            ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "pm.test('Cleanup policy done (200 or 404)', () => pm.expect([200,404]).to.include(pm.response.code));"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/{{cleanup_policy_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","{{cleanup_policy_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
+          }
+        },
+        {
+          "name": "Cleanup — delete PostmanTestToken if exists",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": [
+              "const base = pm.collectionVariables.get('base_url');",
+              "const token = pm.collectionVariables.get('splunk_token');",
+              "pm.sendRequest({",
+              "  url: `${base}/servicesNS/nobody/edl_manager/edl_manager/tokens?output_mode=json`,",
+              "  method: 'GET',",
+              "  header: { Authorization: `Bearer ${token}` }",
+              "}, (err, res) => {",
+              "  const items = res.json().items || [];",
+              "  const t = items.find(i => i.name === 'PostmanTestToken');",
+              "  pm.collectionVariables.set('cleanup_token_key', t ? t._key : 'none');",
+              "});"
+            ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "pm.test('Cleanup token done (200 or 404)', () => pm.expect([200,404]).to.include(pm.response.code));"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens/{{cleanup_token_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens","{{cleanup_token_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
+          }
+        },
+        {
+          "name": "Cleanup — delete postman-sourced IOCs",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": [
+              "// Delete all IOCs with source=postman",
+              "const base = pm.collectionVariables.get('base_url');",
+              "const token = pm.collectionVariables.get('splunk_token');",
+              "pm.sendRequest({",
+              "  url: `${base}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&count=0`,",
+              "  method: 'GET',",
+              "  header: { Authorization: `Bearer ${token}` }",
+              "}, (err, res) => {",
+              "  const items = (res.json().items || []).filter(i => i.source === 'postman');",
+              "  pm.collectionVariables.set('cleanup_ioc_keys', JSON.stringify(items.map(i => i._key)));",
+              "});"
+            ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "pm.test('Cleanup IOCs done (200 or 400)', () => pm.expect([200,400]).to.include(pm.response.code));"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "method": "POST", "header": [],
+            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_delete\",\"keys\":{{cleanup_ioc_keys}}}" }] },
+            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
           }
         }
       ]
@@ -62,16 +128,9 @@
           "name": "List policies",
           "event": [{ "listen": "test", "script": { "exec": [
             "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has items array', () => {",
-            "  const b = pm.response.json();",
-            "  pm.expect(b).to.have.property('items');",
-            "  pm.expect(b.items).to.be.an('array');",
-            "});"
+            "pm.test('Has items array', () => { const b = pm.response.json(); pm.expect(b).to.have.property('items'); pm.expect(b.items).to.be.an('array'); });"
           ], "type": "text/javascript" } }],
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Create policy",
@@ -83,83 +142,35 @@
             "pm.collectionVariables.set('policy_key', b._key);"
           ], "type": "text/javascript" } }],
           "request": {
-            "method": "POST",
-            "header": [],
-            "body": {
-              "mode": "urlencoded",
-              "urlencoded": [{ "key": "payload", "value": "{\"name\":\"TestPolicy\",\"description\":\"Postman test policy\",\"default_ttl_hours\":72,\"auto_expire\":false,\"list_type_default\":\"block\",\"refresh_behavior\":\"static\",\"tags\":[]}" }]
-            },
+            "method": "POST", "header": [],
+            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"TestPolicy\",\"description\":\"Postman test policy\",\"default_ttl_hours\":72,\"auto_expire\":false,\"tags\":[]}" }] },
             "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies"], "query": [{ "key": "output_mode", "value": "json" }] }
           }
         },
         {
           "name": "Create policy — duplicate (expect 409)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 409 on duplicate', () => pm.response.to.have.status(409));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"TestPolicy\",\"description\":\"duplicate\",\"default_ttl_hours\":24}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 409', () => pm.response.to.have.status(409));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"TestPolicy\",\"description\":\"duplicate\",\"default_ttl_hours\":24}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Create policy — validation error (expect 400)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 400 on bad data', () => pm.response.to.have.status(400));",
-            "pm.test('Has error field', () => pm.expect(pm.response.json()).to.have.property('error'));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"\",\"default_ttl_hours\":-1}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 400', () => pm.response.to.have.status(400));", "pm.test('Has error', () => pm.expect(pm.response.json()).to.have.property('error'));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"\",\"default_ttl_hours\":-1}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Get policy by key",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Correct policy returned', () => pm.expect(pm.response.json().name).to.equal('TestPolicy'));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/{{policy_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","{{policy_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('Name matches', () => pm.expect(pm.response.json().name).to.equal('TestPolicy'));"], "type": "text/javascript" } }],
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/{{policy_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","{{policy_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Update policy",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Description updated', () => pm.expect(pm.response.json().description).to.equal('Updated description'));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"TestPolicy\",\"description\":\"Updated description\",\"default_ttl_hours\":48,\"auto_expire\":true}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/{{policy_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","{{policy_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('Description updated', () => pm.expect(pm.response.json().description).to.equal('Updated description'));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"TestPolicy\",\"description\":\"Updated description\",\"default_ttl_hours\":48,\"auto_expire\":true}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/{{policy_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","{{policy_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Get policy — not found (expect 404)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 404', () => pm.response.to.have.status(404));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/does-not-exist?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","does-not-exist"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
-        },
-        {
-          "name": "Delete policy",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200 or 409', () => pm.expect([200,409]).to.include(pm.response.code));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "DELETE",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/{{policy_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","{{policy_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 404', () => pm.response.to.have.status(404));"], "type": "text/javascript" } }],
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/does-not-exist?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","does-not-exist"], "query": [{ "key": "output_mode", "value": "json" }] } }
         }
       ]
     },
@@ -168,192 +179,69 @@
       "item": [
         {
           "name": "List IOCs",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has items', () => pm.expect(pm.response.json()).to.have.property('items'));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('Has items', () => pm.expect(pm.response.json()).to.have.property('items'));"], "type": "text/javascript" } }],
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Create IOC — IP block",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 201', () => pm.response.to.have.status(201));",
-            "const b = pm.response.json();",
-            "pm.test('Has _key', () => pm.expect(b).to.have.property('_key'));",
-            "pm.test('Type is ip', () => pm.expect(b.type).to.equal('ip'));",
-            "pm.collectionVariables.set('ioc_key', b._key);"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"10.0.0.1\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"description\":\"Postman test IOC\",\"source\":\"postman\",\"tags\":[\"test\"]}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 201', () => pm.response.to.have.status(201));", "const b = pm.response.json();", "pm.test('Has _key', () => pm.expect(b).to.have.property('_key'));", "pm.test('Type is ip', () => pm.expect(b.type).to.equal('ip'));", "pm.collectionVariables.set('ioc_key', b._key);"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"10.0.0.1\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"description\":\"Postman test IOC\",\"source\":\"postman\",\"tags\":[\"test\"]}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Create IOC — domain block",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 201', () => pm.response.to.have.status(201));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"domain\",\"value\":\"evil.example.com\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"source\":\"postman\"}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 201', () => pm.response.to.have.status(201));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"domain\",\"value\":\"evil.example.com\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"source\":\"postman\"}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Create IOC — URL block",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 201', () => pm.response.to.have.status(201));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"url\",\"value\":\"https://evil.example.com/malware.exe\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"source\":\"postman\"}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 201', () => pm.response.to.have.status(201));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"url\",\"value\":\"https://evil.example.com/malware.exe\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"source\":\"postman\"}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
-          "name": "Create IOC — allow (triggers conflict with IP block)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 201', () => pm.response.to.have.status(201));",
-            "pm.test('conflict_state set', () => {",
-            "  pm.expect(['none','conflict']).to.include(pm.response.json().conflict_state);",
-            "});"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"10.0.0.1\",\"list_type\":\"allow\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"source\":\"postman\"}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "name": "Create IOC — allow (triggers conflict)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 201', () => pm.response.to.have.status(201));", "pm.test('conflict_state set', () => { pm.expect(['none','conflict']).to.include(pm.response.json().conflict_state); });"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"10.0.0.1\",\"list_type\":\"allow\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"source\":\"postman\"}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Create IOC — duplicate (expect 409)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 409 on duplicate', () => pm.response.to.have.status(409));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"10.0.0.1\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\"}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 409', () => pm.response.to.have.status(409));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"10.0.0.1\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\"}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Create IOC — invalid IP (expect 400)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 400 on invalid IP', () => pm.response.to.have.status(400));",
-            "pm.test('Validation error present', () => pm.expect(pm.response.json()).to.have.property('error'));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"not-an-ip\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\"}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 400', () => pm.response.to.have.status(400));", "pm.test('Has error', () => pm.expect(pm.response.json()).to.have.property('error'));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"not-an-ip\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\"}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Get IOC by key",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs/{{ioc_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs","{{ioc_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));"], "type": "text/javascript" } }],
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs/{{ioc_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs","{{ioc_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Update IOC",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Description updated', () => pm.expect(pm.response.json().description).to.equal('Updated via Postman'));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"10.0.0.1\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"description\":\"Updated via Postman\"}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs/{{ioc_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs","{{ioc_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('Description updated', () => pm.expect(pm.response.json().description).to.equal('Updated via Postman'));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"type\":\"ip\",\"value\":\"10.0.0.1\",\"list_type\":\"block\",\"policy_names\":[\"TestPolicy\"],\"status\":\"active\",\"description\":\"Updated via Postman\"}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs/{{ioc_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs","{{ioc_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
-        {
-          "name": "List IOCs — filter type=ip",
-          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&type=ip", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" },{ "key": "type", "value": "ip" }] } }
-        },
-        {
-          "name": "List IOCs — filter list_type=block",
-          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&list_type=block", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" },{ "key": "list_type", "value": "block" }] } }
-        },
-        {
-          "name": "List IOCs — search value",
-          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&search=10.0.0", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" },{ "key": "search", "value": "10.0.0" }] } }
-        },
+        { "name": "List IOCs — filter type=ip", "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&type=ip", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" },{ "key": "type", "value": "ip" }] } } },
+        { "name": "List IOCs — filter list_type=block", "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&list_type=block", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" },{ "key": "list_type", "value": "block" }] } } },
+        { "name": "List IOCs — search value", "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json&search=10.0.0", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" },{ "key": "search", "value": "10.0.0" }] } } },
         {
           "name": "Bulk — disable",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has success_count', () => pm.expect(pm.response.json()).to.have.property('success_count'));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_disable\",\"keys\":[\"{{ioc_key}}\"]}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('Has success_count', () => pm.expect(pm.response.json()).to.have.property('success_count'));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_disable\",\"keys\":[\"{{ioc_key}}\"]}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
-        {
-          "name": "Bulk — enable",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_enable\",\"keys\":[\"{{ioc_key}}\"]}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
-        },
-        {
-          "name": "Bulk — set policy",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_set_policy\",\"keys\":[\"{{ioc_key}}\"],\"policy_names\":[\"TestPolicy\"]}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
-        },
-        {
-          "name": "Bulk — extend TTL 24h",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_extend\",\"keys\":[\"{{ioc_key}}\"],\"delta_hours\":24}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
-        },
+        { "name": "Bulk — enable", "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_enable\",\"keys\":[\"{{ioc_key}}\"]}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } } },
+        { "name": "Bulk — set policy", "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_set_policy\",\"keys\":[\"{{ioc_key}}\"],\"policy_names\":[\"TestPolicy\"]}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } } },
+        { "name": "Bulk — extend TTL 24h", "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_extend\",\"keys\":[\"{{ioc_key}}\"],\"delta_hours\":24}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } } },
         {
           "name": "Bulk — empty keys (expect 400)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_delete\",\"keys\":[]}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 400', () => pm.response.to.have.status(400));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"bulk_delete\",\"keys\":[]}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Delete IOC",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('deleted=true', () => pm.expect(pm.response.json().deleted).to.equal(true));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "DELETE",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs/{{ioc_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs","{{ioc_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('deleted=true', () => pm.expect(pm.response.json().deleted).to.equal(true));"], "type": "text/javascript" } }],
+          "request": { "method": "DELETE", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/iocs/{{ioc_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","iocs","{{ioc_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         }
       ]
     },
@@ -361,34 +249,16 @@
       "name": "3. Feed Endpoint",
       "item": [
         {
-          "name": "Feed — plain text (Splunk token auth)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/feed?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","feed"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "name": "Feed — plain text",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));"], "type": "text/javascript" } }],
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/feed?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","feed"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
+        { "name": "Feed — JSON, type=ip, list_type=block", "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/feed?format=json&type=ip&list_type=block&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","feed"], "query": [{ "key": "format", "value": "json" },{ "key": "type", "value": "ip" },{ "key": "list_type", "value": "block" },{ "key": "output_mode", "value": "json" }] } } },
+        { "name": "Feed — CSV", "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/feed?format=csv&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","feed"], "query": [{ "key": "format", "value": "csv" },{ "key": "output_mode", "value": "json" }] } } },
         {
-          "name": "Feed — JSON format, type=ip, list_type=block",
-          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/feed?format=json&type=ip&list_type=block&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","feed"], "query": [{ "key": "format", "value": "json" },{ "key": "type", "value": "ip" },{ "key": "list_type", "value": "block" },{ "key": "output_mode", "value": "json" }] } }
-        },
-        {
-          "name": "Feed — CSV format",
-          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/feed?format=csv&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","feed"], "query": [{ "key": "format", "value": "csv" },{ "key": "output_mode", "value": "json" }] } }
-        },
-        {
-          "name": "Feed — EDLToken auth (firewall simulation)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Not 401', () => pm.expect(pm.response.code).to.not.equal(401));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "auth": { "type": "noauth" },
-            "method": "GET",
-            "header": [{ "key": "Authorization", "value": "EDLToken {{edl_token_raw}}" }],
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/feed?format=text&type=ip&list_type=block&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","feed"], "query": [{ "key": "format", "value": "text" },{ "key": "type", "value": "ip" },{ "key": "list_type", "value": "block" },{ "key": "output_mode", "value": "json" }] }
-          }
+          "name": "Feed — EDLToken auth",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Not 401', () => pm.expect(pm.response.code).to.not.equal(401));"], "type": "text/javascript" } }],
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "header": [{ "key": "Authorization", "value": "EDLToken {{edl_token_raw}}" }], "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/feed?format=text&type=ip&list_type=block&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","feed"], "query": [{ "key": "format", "value": "text" },{ "key": "type", "value": "ip" },{ "key": "list_type", "value": "block" },{ "key": "output_mode", "value": "json" }] } }
         }
       ]
     },
@@ -397,66 +267,28 @@
       "item": [
         {
           "name": "List tokens",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('No token_hash exposed', () => {",
-            "  pm.response.json().items.forEach(t => pm.expect(t).to.not.have.property('token_hash'));",
-            "});"
-          ], "type": "text/javascript" } }],
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('No token_hash exposed', () => { pm.response.json().items.forEach(t => pm.expect(t).to.not.have.property('token_hash')); });"], "type": "text/javascript" } }],
           "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Create token",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 201', () => pm.response.to.have.status(201));",
-            "const b = pm.response.json();",
-            "pm.test('Raw token returned once', () => pm.expect(b).to.have.property('token'));",
-            "pm.test('Warning present', () => pm.expect(b).to.have.property('warning'));",
-            "pm.collectionVariables.set('token_key', b._key);",
-            "pm.collectionVariables.set('edl_token_raw', b.token);"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"PostmanTestToken\",\"description\":\"Token for Postman tests\",\"owner\":\"admin\",\"capabilities\":[\"edl_read\"],\"expires_in_days\":30}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 201', () => pm.response.to.have.status(201));", "const b = pm.response.json();", "pm.test('Raw token returned', () => pm.expect(b).to.have.property('token'));", "pm.test('Warning present', () => pm.expect(b).to.have.property('warning'));", "pm.collectionVariables.set('token_key', b._key);", "pm.collectionVariables.set('edl_token_raw', b.token);"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"PostmanTestToken\",\"description\":\"Token for Postman tests\",\"owner\":\"admin\",\"capabilities\":[\"edl_read\"],\"expires_in_days\":30}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Disable token",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Token disabled', () => pm.expect(pm.response.json().active).to.equal(false));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"active\":false}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens/{{token_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens","{{token_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('Token disabled', () => pm.expect(pm.response.json().active).to.equal(false));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"active\":false}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens/{{token_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens","{{token_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Re-enable token",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Token re-enabled', () => pm.expect(pm.response.json().active).to.equal(true));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"active\":true}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens/{{token_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens","{{token_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('Token re-enabled', () => pm.expect(pm.response.json().active).to.equal(true));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"active\":true}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens/{{token_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens","{{token_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Delete token",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "DELETE",
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens/{{token_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens","{{token_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));"], "type": "text/javascript" } }],
+          "request": { "method": "DELETE", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/tokens/{{token_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","tokens","{{token_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         }
       ]
     },
@@ -465,69 +297,28 @@
       "item": [
         {
           "name": "List conflicts (open)",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "const b = pm.response.json();",
-            "if (b.items && b.items.length > 0) pm.collectionVariables.set('conflict_key', b.items[0]._key);"
-          ], "type": "text/javascript" } }],
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "const b = pm.response.json();", "if (b.items && b.items.length > 0) pm.collectionVariables.set('conflict_key', b.items[0]._key);"], "type": "text/javascript" } }],
           "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/conflicts?state=open&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","conflicts"], "query": [{ "key": "state", "value": "open" },{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Resolve conflict — block_wins",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"resolution\":\"block_wins\"}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/conflicts/{{conflict_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","conflicts","{{conflict_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"resolution\":\"block_wins\"}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/conflicts/{{conflict_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","conflicts","{{conflict_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
-        {
-          "name": "Trigger conflict scan",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"scan\"}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/conflicts?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","conflicts"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
-        }
+        { "name": "Trigger conflict scan", "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"action\":\"scan\"}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/conflicts?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","conflicts"], "query": [{ "key": "output_mode", "value": "json" }] } } }
       ]
     },
     {
       "name": "6. TAXII Sources",
       "item": [
-        {
-          "name": "List TAXII sources",
-          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/taxii?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","taxii"], "query": [{ "key": "output_mode", "value": "json" }] } }
-        },
+        { "name": "List TAXII sources", "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/taxii?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","taxii"], "query": [{ "key": "output_mode", "value": "json" }] } } },
         {
           "name": "Create TAXII source",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 201', () => pm.response.to.have.status(201));",
-            "pm.collectionVariables.set('taxii_key', pm.response.json()._key);"
-          ], "type": "text/javascript" } }],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"PostmanTestTAXII\",\"taxii_server_url\":\"https://limo.anomali.com/api/v1/taxii2\",\"api_root\":\"taxii2\",\"collection_id\":\"55f35bb5-a186-4806-b59b-01a25a3a6e8c\",\"auth_type\":\"none\",\"default_policy\":\"TestPolicy\",\"default_list_type\":\"block\",\"default_ttl_hours\":168,\"enabled\":true}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/taxii?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","taxii"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 201', () => pm.response.to.have.status(201));", "pm.collectionVariables.set('taxii_key', pm.response.json()._key);"], "type": "text/javascript" } }],
+          "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"name\":\"PostmanTestTAXII\",\"taxii_server_url\":\"https://limo.anomali.com/api/v1/taxii2\",\"api_root\":\"taxii2\",\"collection_id\":\"55f35bb5-a186-4806-b59b-01a25a3a6e8c\",\"auth_type\":\"none\",\"default_policy\":\"TestPolicy\",\"default_list_type\":\"block\",\"default_ttl_hours\":168,\"enabled\":true}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/taxii?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","taxii"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
-        {
-          "name": "Update TAXII source",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"enabled\":false,\"default_ttl_hours\":72}" }] },
-            "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/taxii/{{taxii_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","taxii","{{taxii_key}}"], "query": [{ "key": "output_mode", "value": "json" }] }
-          }
-        },
-        {
-          "name": "Delete TAXII source",
-          "request": { "method": "DELETE", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/taxii/{{taxii_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","taxii","{{taxii_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
-        }
+        { "name": "Update TAXII source", "request": { "method": "POST", "header": [], "body": { "mode": "urlencoded", "urlencoded": [{ "key": "payload", "value": "{\"enabled\":false,\"default_ttl_hours\":72}" }] }, "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/taxii/{{taxii_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","taxii","{{taxii_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } } },
+        { "name": "Delete TAXII source", "request": { "method": "DELETE", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/taxii/{{taxii_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","taxii","{{taxii_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } } }
       ]
     },
     {
@@ -535,22 +326,24 @@
       "item": [
         {
           "name": "Get stats",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));"
-          ], "type": "text/javascript" } }],
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));"], "type": "text/javascript" } }],
           "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/stats?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","stats"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
         {
           "name": "Get audit log",
-          "event": [{ "listen": "test", "script": { "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has items', () => pm.expect(pm.response.json()).to.have.property('items'));"
-          ], "type": "text/javascript" } }],
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));", "pm.test('Has items', () => pm.expect(pm.response.json()).to.have.property('items'));"], "type": "text/javascript" } }],
           "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/audit?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","audit"], "query": [{ "key": "output_mode", "value": "json" }] } }
         },
+        { "name": "Get audit log — filter action=create", "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/audit?action=create&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","audit"], "query": [{ "key": "action", "value": "create" },{ "key": "output_mode", "value": "json" }] } } }
+      ]
+    },
+    {
+      "name": "8. Final Cleanup",
+      "item": [
         {
-          "name": "Get audit log — filter action=create",
-          "request": { "method": "GET", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/audit?action=create&output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","audit"], "query": [{ "key": "action", "value": "create" },{ "key": "output_mode", "value": "json" }] } }
+          "name": "Delete TestPolicy",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Policy cleaned up', () => pm.expect([200,404]).to.include(pm.response.code));"], "type": "text/javascript" } }],
+          "request": { "method": "DELETE", "url": { "raw": "{{base_url}}/servicesNS/nobody/edl_manager/edl_manager/policies/{{policy_key}}?output_mode=json", "host": ["{{base_url}}"], "path": ["servicesNS","nobody","edl_manager","edl_manager","policies","{{policy_key}}"], "query": [{ "key": "output_mode", "value": "json" }] } }
         }
       ]
     }
